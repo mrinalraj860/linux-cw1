@@ -5671,12 +5671,7 @@ void sched_tick(void)
 	struct rq_flags rf;
 	unsigned long hw_pressure;
 	u64 resched_latency;
-	struct task_struct *p = current;
 
-    cpumask_set_cpu(smp_processor_id(), &p->used_cpus);
-
-    p->epoch_ticks++;
-	
 	if (housekeeping_cpu(cpu, HK_TYPE_TICK))
 		arch_scale_freq_tick();
 

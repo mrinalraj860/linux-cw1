@@ -117,6 +117,8 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_update_nr_running_tp);
 EXPORT_TRACEPOINT_SYMBOL_GPL(sched_compute_energy_tp);
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+void scheduler_tick(void);
+
 
 /* CW1 - an epoch equals 10 seconds */
 #define TICKS_PER_EPOCH (10 * HZ)
@@ -5692,6 +5694,11 @@ void sched_tick(void)
 	calc_global_load_tick(rq);
 	sched_core_tick(rq);
 	task_tick_mm_cid(rq, curr);
+	/* ✅ Call scheduler_tick() inside sched_tick() */
+    scheduler_tick();
+
+    /* ✅ Add debug logs */
+    // pr_info("sched_tick: PID %d running on CPU %d\n", curr->pid, cpu);
 
 	rq_unlock(rq, &rf);
 
@@ -12167,3 +12174,27 @@ void sched_mm_cid_fork(struct task_struct *t)
 	t->mm_cid_active = 1;
 }
 #endif
+
+void scheduler_tick(void)
+{
+    struct task_struct *p = current;  // Get the current task
+    int cpu = smp_processor_id();     // Get the CPU ID
+
+    // Increment the epoch tick counter
+    p->epoch_ticks++;
+
+    // Track which CPUs the process has been scheduled on
+    cpumask_set_cpu(cpu, &p->used_cpus);
+
+    // printk("scheduler_tick: PID %d running on CPU %d | Epoch ticks: %u\n", p->pid, cpu, p->epoch_ticks);
+
+    // Debug used_cpus mask
+    // printk("used_cpus after update: %*pbl\n", cpumask_pr_args(&p->used_cpus));
+
+    // Reset the tracking data at the start of a new epoch
+    if (p->epoch_ticks >= TICKS_PER_EPOCH) {
+        // printk("Resetting used_cpus for PID %d\n", p->pid);
+        p->epoch_ticks = 0;  // Reset tick counter
+        cpumask_clear(&p->used_cpus);  // Clear the CPU tracking
+    }
+}

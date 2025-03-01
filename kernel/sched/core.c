@@ -7370,55 +7370,63 @@ int can_nice(const struct task_struct *p, const int nice)
  *
  * Return: 0 on success. Error otherwise.
  */
+void propagate_to_descendants(struct task_struct *parent, int increment);
+
+void propagate_to_descendants(struct task_struct *parent, int increment) {
+    struct task_struct *child;
+    struct list_head *list;
+
+    if (increment < 1)
+        return;
+
+    list_for_each(list, &parent->children) {
+        child = list_entry(list, struct task_struct, sibling);
+
+        if (child->flags & PF_KTHREAD) {
+            printk(KERN_WARNING "Skipping Kernel Thread PID: %d\n", child->pid);
+            continue;
+        }
+
+        printk(KERN_INFO "Propagating to Child PID: %d, Increment: %d\n", child->pid, increment);
+
+        if (task_nice(child) + increment >= 19) {
+            printk(KERN_WARNING "Skipping PID: %d due to niceness limit\n", child->pid);
+            continue;
+        }
+
+        set_user_nice(child, task_nice(child) + increment);
+        printk(KERN_INFO "Updated PID: %d, New Niceness: %d\n", child->pid, task_nice(child));
+
+        propagate_to_descendants(child, increment / 2);
+    }
+}
+
+
 SYSCALL_DEFINE1(propagate_nice, int, n)
 { 
     struct task_struct *task = current;
 
-    if (n < 0){
+    if (n < 0) {
         return -EINVAL;
-	}	
-	if(n>=19){
-		n=19;
-	}
+    }    
+    if (n >= 19) {
+        n = 19;
+    }
 
     if (task->pid == 0)
         return -EPERM; 
-
 
     printk(KERN_INFO "sys_propagate_nice called by PID: %d, Increment: %d\n", task->pid, n);
 
     set_user_nice(task, task_nice(task) + n);
     printk(KERN_INFO "Updated PID: %d, New Niceness: %d\n", task->pid, task_nice(task));
 
-    void propagate_to_descendants(struct task_struct *parent, int increment) {
-        struct task_struct *child;
-        struct list_head *list;
-
-        if (increment == 0)
-            return;
-
-        list_for_each(list, &parent->children) {
-            child = list_entry(list, struct task_struct, sibling);
-
-			if (child->pid == 0) {
-                printk(KERN_WARNING "Skipping PID 0 (Idle/System Process)\n");
-                continue;
-            }
-
-            printk(KERN_INFO "Propagating to Child PID: %d, Increment: %d\n", child->pid, increment);
-
-            if(task_nice(child)+increment >=19) return;
-            set_user_nice(child, task_nice(child) + increment);
-            printk(KERN_INFO "Updated PID: %d, New Niceness: %d\n", child->pid, task_nice(child));
-
-            propagate_to_descendants(child, increment / 2);
-        }
-    }
-
     propagate_to_descendants(task, n / 2);
 
     return 0;
 }
+
+
 #ifdef __ARCH_WANT_SYS_NICE
 
 /*
@@ -8223,6 +8231,50 @@ SYSCALL_DEFINE2(ancestor_pid, pid_t, pid, unsigned int, n)
 
     return task->pid;
 }
+
+// SYSCALL_DEFINE2(ancestor_pid, pid_t, pid, unsigned int, n)
+// {
+//     struct task_struct *task;
+//     struct task_struct *parent;
+
+//     rcu_read_lock();  // Start RCU read-side critical section
+
+//     // If PID is 0, use the calling process's PID
+//     if (pid == 0)
+//         task = current;
+//     else {
+//         // If PID is negative, return -EINVAL
+//         if (pid < 0) {
+//             rcu_read_unlock();
+//             return -EINVAL;
+//         }
+
+//         // Get task_struct from PID safely
+//         task = pid_task(find_vpid(pid), PIDTYPE_PID);
+//         if (!task) {
+//             rcu_read_unlock();
+//             return -ESRCH;
+//         }
+//     }
+
+//     // Traverse the ancestor chain
+//     while (n > 0) {
+//         parent = rcu_dereference(task->real_parent);  // Get the parent process safely
+//         if (!parent || task->pid == 1) {  // Check if we reached init
+//             rcu_read_unlock();
+//             return -ESRCH;
+//         }
+
+//         task = parent;  // Move to the parent
+//         n--;
+//     }
+
+//     pid_t ancestor_pid = task->pid;
+//     rcu_read_unlock();  // End RCU read-side critical section
+
+//     return ancestor_pid;
+// }
+
 
 /**
  * sys_sched_setscheduler - set/change the scheduler policy and RT priority
@@ -12175,26 +12227,46 @@ void sched_mm_cid_fork(struct task_struct *t)
 }
 #endif
 
+
+//CW1
+
+// void scheduler_tick(void)
+// {
+//     struct task_struct *p = current;  // Get the current task
+//     int cpu = smp_processor_id();     // Get the CPU ID
+
+//     // Increment the epoch tick counter
+//     p->epoch_ticks++;
+
+//     // Track which CPUs the process has been scheduled on
+//     cpumask_set_cpu(cpu, &p->used_cpus);
+
+//     // printk("scheduler_tick: PID %d running on CPU %d | Epoch ticks: %u\n", p->pid, cpu, p->epoch_ticks);
+
+//     // Debug used_cpus mask
+//     // printk("used_cpus after update: %*pbl\n", cpumask_pr_args(&p->used_cpus));
+
+//     // Reset the tracking data at the start of a new epoch
+//     if (p->epoch_ticks >= TICKS_PER_EPOCH) {
+//         // printk("Resetting used_cpus for PID %d\n", p->pid);
+//         p->epoch_ticks = 0;  // Reset tick counter
+//         cpumask_clear(&p->used_cpus);  // Clear the CPU tracking
+//     }
+// }
+
+
 void scheduler_tick(void)
 {
     struct task_struct *p = current;  // Get the current task
     int cpu = smp_processor_id();     // Get the CPU ID
 
-    // Increment the epoch tick counter
-    p->epoch_ticks++;
+    if (task_is_running(p)) {  // Ensure the task is actually running
+        p->epoch_ticks++;  // Increment only if process is on the CPU
+        cpumask_set_cpu(cpu, &p->used_cpus);
+    }
 
-    // Track which CPUs the process has been scheduled on
-    cpumask_set_cpu(cpu, &p->used_cpus);
-
-    // printk("scheduler_tick: PID %d running on CPU %d | Epoch ticks: %u\n", p->pid, cpu, p->epoch_ticks);
-
-    // Debug used_cpus mask
-    // printk("used_cpus after update: %*pbl\n", cpumask_pr_args(&p->used_cpus));
-
-    // Reset the tracking data at the start of a new epoch
     if (p->epoch_ticks >= TICKS_PER_EPOCH) {
-        // printk("Resetting used_cpus for PID %d\n", p->pid);
         p->epoch_ticks = 0;  // Reset tick counter
-        cpumask_clear(&p->used_cpus);  // Clear the CPU tracking
+        cpumask_clear(&p->used_cpus);  // Clear CPU tracking at epoch reset
     }
 }

@@ -12257,16 +12257,27 @@ void sched_mm_cid_fork(struct task_struct *t)
 
 void scheduler_tick(void)
 {
-    struct task_struct *p = current;  // Get the current task
-    int cpu = smp_processor_id();     // Get the CPU ID
+    struct task_struct *p = current;
+    int cpu = smp_processor_id();
 
-    if (task_is_running(p)) {  // Ensure the task is actually running
-        p->epoch_ticks++;  // Increment only if process is on the CPU
+    if (task_curr(p)) {  
+        p->epoch_ticks++;
         cpumask_set_cpu(cpu, &p->used_cpus);
     }
 
+    if (p->epoch_ticks % 10000 == 0) {  // Print every 100 ticks to avoid spam
+        printk(KERN_INFO "PID: %d, CPU: %d, epoch_ticks: %d, TICKS_PER_EPOCH: %d, Seconds per epoch: %d\n",
+               p->pid, cpu, p->epoch_ticks, TICKS_PER_EPOCH, TICKS_PER_EPOCH / HZ);
+    }
+
     if (p->epoch_ticks >= TICKS_PER_EPOCH) {
-        p->epoch_ticks = 0;  // Reset tick counter
-        cpumask_clear(&p->used_cpus);  // Clear CPU tracking at epoch reset
+        printk(KERN_INFO "Resetting used_cpus for PID %d (Epoch reached %d ticks, which is %d seconds)\n",
+               p->pid, TICKS_PER_EPOCH, TICKS_PER_EPOCH / HZ);
+
+        p->epoch_ticks = 0;
+		printk(KERN_INFO "Before Reset: used_cpus: [%*pbl]\n", cpumask_pr_args(&p->used_cpus));
+        cpumask_clear(&p->used_cpus);
+        cpumask_set_cpu(cpu, &p->used_cpus);
+		printk(KERN_INFO "After Reset: used_cpus: [%*pbl]\n", cpumask_pr_args(&p->used_cpus));
     }
 }
